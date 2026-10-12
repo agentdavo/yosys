@@ -139,6 +139,25 @@ struct SynthLatticePass : public ScriptPass
 		log("    -nodsp\n");
 		log("        do not infer DSP multipliers\n");
 		log("\n");
+		log("    -ioff\n");
+		log("        mark flops right at a pin for nextpnr to place in the pin's IO\n");
+		log("        register (only for -family ecp5; every such pin must be constrained)\n");
+		log("\n");
+		log("    -dsp-shift\n");
+		log("        map small variable left shifts (2 to 4 bits, of values up to 18 bits)\n");
+		log("        onto DSP multiplies by a one-hot, instead of LUT barrel shifters: far\n");
+		log("        fewer LUTs, one DSP block per shift, and usually a lower Fmax\n");
+		log("\n");
+		log("    -dsp-mac1\n");
+		log("        also move a running sum of a single product into an ALU54B (only\n");
+		log("        for -family ecp5). A sum of two products always gets one; a single\n");
+		log("        product costs both MULT18X18D of the pair, one of them idle.\n");
+		log("\n");
+		log("    -wide-scale\n");
+		log("        pass -wide-scale to lattice_dsp_nexus: a scale folded into a multiply\n");
+		log("        may move it from MULT18X18 to MULT18X36, for fewer LUTs, often at\n");
+		log("        some cost in Fmax (only for -family lifcl/lfd2nx)\n");
+		log("\n");
 		log("    -no-rw-check\n");
 		log("        marks all recognized read ports as \"return don't-care value on\n");
 		log("        read/write collision\" (same result as setting the no_rw_check\n");
@@ -159,7 +178,7 @@ struct SynthLatticePass : public ScriptPass
 
 	string top_opt, edif_file, json_file, family;
 	SynthLatchesConfig latches;
-	bool noccu2, nodffe, nobram, nolutram, nowidelut, asyncprld, flatten, dff, iopad, nodsp, no_rw_check, have_dsp;
+	bool noccu2, nodffe, nobram, nolutram, nowidelut, asyncprld, flatten, dff, iopad, nodsp, no_rw_check, have_dsp, wide_scale, dsp_shift, dsp_mac1, ioff;
 	bool cmp2softlogic;
 	string postfix, arith_map, brams_map, dsp_map, cells_map, map_ram_default;
 	bool is_nexus;
@@ -181,6 +200,10 @@ struct SynthLatticePass : public ScriptPass
 		dff = false;
 		iopad = false;
 		nodsp = false;
+		wide_scale = false;
+		dsp_shift = false;
+		dsp_mac1 = false;
+		ioff = false;
 		no_rw_check = false;
 		latches = SynthLatchesConfig();
 		postfix = "";
@@ -300,6 +323,22 @@ struct SynthLatticePass : public ScriptPass
 				nodsp = true;
 				continue;
 			}
+			if (args[argidx] == "-ioff") {
+				ioff = true;
+				continue;
+			}
+			if (args[argidx] == "-dsp-shift") {
+				dsp_shift = true;
+				continue;
+			}
+			if (args[argidx] == "-dsp-mac1") {
+				dsp_mac1 = true;
+				continue;
+			}
+			if (args[argidx] == "-wide-scale") {
+				wide_scale = true;
+				continue;
+			}
 			if (args[argidx] == "-no-rw-check") {
 				no_rw_check = true;
 				continue;
@@ -415,8 +454,10 @@ struct SynthLatticePass : public ScriptPass
 				run("alumacc -macc-only", "(only if -family lifcl/lfd2nx and unless -nodsp)");
 				run("maccmap -unmap", "(only if -family lifcl/lfd2nx and unless -nodsp)");
 				run("opt_clean", "(only if -family lifcl/lfd2nx and unless -nodsp)");
-				run("lattice_dsp_nexus", "(only if -family lifcl/lfd2nx and unless -nodsp)");
+				run("lattice_dsp_nexus [-wide-scale] [-dsp-shift]", "(only if -family lifcl/lfd2nx and unless -nodsp)");
+				run("lattice_dsp_ecp5 [-dsp-shift] [-mac1]", "(only if -family ecp5 and unless -nodsp)");
 				run("techmap -map +/mul2dsp.v [...]", "(unless -nodsp)");
+				run("lattice_dsp_ecp5 -tiles", "(only if -family ecp5 and unless -nodsp)");
 				run("techmap -map +/lattice/dsp_map" + dsp_map + ".v", "(unless -nodsp)");
 			} else if (have_dsp && !nodsp) {
 				if (is_nexus) {
@@ -424,13 +465,17 @@ struct SynthLatticePass : public ScriptPass
 					run("alumacc -macc-only");
 					run("maccmap -unmap");
 					run("opt_clean");
-					run("lattice_dsp_nexus");
+					run(std::string("lattice_dsp_nexus") + (wide_scale ? " -wide-scale" : "") + (dsp_shift ? " -dsp-shift" : ""));
+				} else if (family == "ecp5") {
+					run(std::string("lattice_dsp_ecp5") + (dsp_shift ? " -dsp-shift" : "") + (dsp_mac1 ? " -mac1" : ""));
 				}
 				for (const auto &rule : dsp_rules) {
 					run(stringf("techmap -map +/mul2dsp.v -D DSP_A_MAXWIDTH=%d -D DSP_B_MAXWIDTH=%d -D DSP_A_MINWIDTH=%d -D DSP_B_MINWIDTH=%d -D DSP_NAME=%s",
 						rule.a_maxwidth, rule.b_maxwidth, rule.a_minwidth, rule.b_minwidth, rule.prim));
 					run("chtype -set $mul t:$__soft_mul");
 				}
+				if (family == "ecp5")
+					run("lattice_dsp_ecp5 -tiles");
 				run("techmap -map +/lattice/dsp_map" + dsp_map + ".v");
 			}
 			if (family == "xo3" || help_mode)
@@ -455,6 +500,8 @@ struct SynthLatticePass : public ScriptPass
 			if (!is_nexus) {
 				run("memory_libmap -lib +/lattice/lutrams" + cells_map + ".txt -lib +/lattice/brams" + brams_map + ".txt" + args, "(-no-auto-block if -nobram, -no-auto-distributed if -nolutram)");
 				run("techmap -map +/lattice/lutrams_map" + cells_map + ".v -map +/lattice/brams_map" + brams_map + ".v");
+				if (family == "ecp5" || help_mode)
+					run("lattice_bram_ecp5", "(only if -family ecp5)");
 			} else {
 				run("memory_libmap -lib +/lattice/lutrams" + cells_map + ".txt -lib +/lattice/brams" + brams_map + ".txt -lib +/lattice/lrams_nexus.txt" + args, "(-no-auto-block if -nobram, -no-auto-distributed if -nolutram)");
 				run("techmap -map +/lattice/lutrams_map" + cells_map + ".v -map +/lattice/brams_map" + brams_map + ".v -map +/lattice/lrams_map_nexus.v");
@@ -553,6 +600,8 @@ struct SynthLatticePass : public ScriptPass
 				run("opt_lut_ins -tech lattice");
 			}
 			run("clean");
+			if (help_mode || (ioff && family == "ecp5"))
+				run("lattice_ioff_ecp5", "(only if -ioff and -family ecp5)");
 		}
 
 		if (check_label("check"))

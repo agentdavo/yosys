@@ -1,0 +1,15 @@
+read_verilog -sv ioff.sv
+design -save pristine
+
+# Off by default: nextpnr refuses IO registers on unconstrained pins
+design -load pristine
+synth_ecp5 -top io
+select -assert-count 0 a:syn_useioff
+
+# a, b, c flops take their pins' input registers; w its pins' output
+# registers; y is also read by z, so it stays in the fabric
+design -load pristine
+synth_ecp5 -ioff -top io
+select -assert-count 24 t:TRELLIS_FF a:ioff_dir=input %i
+select -assert-count 8 t:TRELLIS_FF a:ioff_dir=output %i
+select -assert-count 0 w:y %ci:+[Q] t:TRELLIS_FF %i a:syn_useioff %i

@@ -429,17 +429,12 @@ if (NOT YOSYS_BUILD_PYTHON_ONLY)
 		INSTALL_IF ${YOSYS_INSTALL_DRIVER}
 	)
 	yosys_link_components(yosys PRIVATE ${driver_components})
-	set_property(TARGET yosys PROPERTY ENABLE_EXPORTS ON)
 	if (MINGW)
-		target_link_options(yosys PRIVATE -municode LINKER:--export-all-symbols)
-		set_target_properties(yosys PROPERTIES
-			# Final name: `yosys.exe.a` (linked to explicitly)
-			IMPORT_PREFIX ""
-			IMPORT_SUFFIX ".exe.a"
-		)
-		if (YOSYS_INSTALL_DRIVER)
-			install(FILES ${YOSYS_CMAKE_BINARY_DIR}/yosys.exe.a DESTINATION ${YOSYS_INSTALL_LIBDIR})
-		endif()
+		target_link_options(yosys PRIVATE -municode)
+		# PE export ordinals are 16-bit. This binary has more globals than that.
+		set_property(TARGET yosys PROPERTY ENABLE_EXPORTS OFF)
+	else()
+		set_property(TARGET yosys PROPERTY ENABLE_EXPORTS ON)
 	endif()
 
 	target_compile_options(yosys PRIVATE -fsanitize=undefined)

@@ -105,7 +105,7 @@ module \$__NX_MUL9X9 (input [8:0] A, input [8:0] B, output [17:0] Y);
 	);
 endmodule
 
-module \$__NX_MAC18X18 (input [17:0] A, input [17:0] B, input [47:0] C, output [53:0] Y);
+module \$__NX_MAC18X18 (input [17:0] A, input [17:0] B, input [47:0] C, input CLK, CEOUT, RSTOUT, output [53:0] Y);
 
 	parameter A_WIDTH = 18;
 	parameter B_WIDTH = 18;
@@ -114,7 +114,35 @@ module \$__NX_MAC18X18 (input [17:0] A, input [17:0] B, input [47:0] C, output [
 	parameter A_SIGNED = 0;
 	parameter B_SIGNED = 0;
 	parameter SUBTRACT = 0;
+	parameter ACCUM = 0;
 
+	// ACCUM: Y is the output register and LOADC=0 makes ACC54 add Z back
+	// in place of C, so Y <= Y +/- A*B.
+	generate if (ACCUM) begin
+	MULTADDSUB18X18 #(
+		.REGINPUTA("BYPASS"),
+		.REGINPUTB("BYPASS"),
+		.REGINPUTC("BYPASS"),
+		.REGADDSUB("BYPASS"),
+		.REGLOADC("BYPASS"),
+		.REGLOADC2("BYPASS"),
+		.REGCIN("BYPASS"),
+		.REGPIPELINE("BYPASS"),
+		.REGOUTPUT("REGISTER"),
+		.RESETMODE("SYNC")
+	) _TECHMAP_REPLACE_ (
+		.A(A),
+		.B(B),
+		.CLK(CLK),
+		.CEOUT(CEOUT),
+		.RSTOUT(RSTOUT),
+		.SIGNED(A_SIGNED ? 1'b1 : 1'b0),
+		.ADDSUB(SUBTRACT ? 1'b1 : 1'b0),
+		.LOADC(1'b0),
+		.CIN(1'b0),
+		.Z(Y)
+	);
+	end else begin
 	MULTADDSUB18X18 #(
 		.REGINPUTA("BYPASS"),
 		.REGINPUTB("BYPASS"),
@@ -135,6 +163,7 @@ module \$__NX_MAC18X18 (input [17:0] A, input [17:0] B, input [47:0] C, output [
 		.CIN(1'b0),
 		.Z(Y)
 	);
+	end endgenerate
 endmodule
 
 module \$__NX_MAC36X36 (input [35:0] A, input [35:0] B, input [107:0] C, output [107:0] Y);
@@ -193,20 +222,56 @@ module \$__NX_PREADD18X18 (input [17:0] A, input [17:0] B, input [17:0] C, input
 	);
 endmodule
 
-module \$__NX_MAC9X9WIDE_4LANE (input [8:0] A0, B0, A1, B1, A2, B2, A3, B3, input [53:0] C, output [53:0] Y);
+module \$__NX_MAC9X9WIDE_4LANE (input [8:0] A0, B0, A1, B1, A2, B2, A3, B3, input [53:0] C, input CLK, CEOUT, RSTOUT,
+		input CEA0A1, CEA2A3, RSTA0A1, RSTA2A3, CEB0B1, CEB2B3, RSTB0B1, RSTB2B3, output [53:0] Y);
 
 	parameter SIGNED = 0;
 	parameter USE_C = 0;
+	parameter ACCUM = 0;
+	// Lane i input registers (A_i and B_i together), copied in from fabric flops.
+	parameter REGINPUTAB0 = "BYPASS";
+	parameter REGINPUTAB1 = "BYPASS";
+	parameter REGINPUTAB2 = "BYPASS";
+	parameter REGINPUTAB3 = "BYPASS";
 
 	// nextpnr copies C onto ACC54.CINPUT and LOADC onto ACC54.LOAD.
 	// LOADC=1 selects that C input; leaving it undriven selects the
 	// accumulator feedback instead. Register bypasses match the
 	// combinational MULTADDSUB18X18 map (the sim model defaults to REGISTER).
+	generate if (ACCUM) begin
 	MULTADDSUB9X9WIDE #(
-		.REGINPUTAB0("BYPASS"),
-		.REGINPUTAB1("BYPASS"),
-		.REGINPUTAB2("BYPASS"),
-		.REGINPUTAB3("BYPASS"),
+		.REGINPUTAB0(REGINPUTAB0),
+		.REGINPUTAB1(REGINPUTAB1),
+		.REGINPUTAB2(REGINPUTAB2),
+		.REGINPUTAB3(REGINPUTAB3),
+		.REGINPUTC("BYPASS"),
+		.REGADDSUB("BYPASS"),
+		.REGLOADC("BYPASS"),
+		.REGLOADC2("BYPASS"),
+		.REGPIPELINE("BYPASS"),
+		.REGOUTPUT("REGISTER"),
+		.RESETMODE("SYNC")
+	) _TECHMAP_REPLACE_ (
+		.A0(A0), .B0(B0),
+		.A1(A1), .B1(B1),
+		.A2(A2), .B2(B2),
+		.A3(A3), .B3(B3),
+		.CLK(CLK),
+		.CEOUT(CEOUT),
+		.RSTOUT(RSTOUT),
+		.CEA0A1(CEA0A1), .CEA2A3(CEA2A3), .RSTA0A1(RSTA0A1), .RSTA2A3(RSTA2A3),
+		.CEB0B1(CEB0B1), .CEB2B3(CEB2B3), .RSTB0B1(RSTB0B1), .RSTB2B3(RSTB2B3),
+		.SIGNED(SIGNED ? 1'b1 : 1'b0),
+		.ADDSUB(4'b0000),
+		.LOADC(1'b0),
+		.Z(Y)
+	);
+	end else begin
+	MULTADDSUB9X9WIDE #(
+		.REGINPUTAB0(REGINPUTAB0),
+		.REGINPUTAB1(REGINPUTAB1),
+		.REGINPUTAB2(REGINPUTAB2),
+		.REGINPUTAB3(REGINPUTAB3),
 		.REGINPUTC("BYPASS"),
 		.REGADDSUB("BYPASS"),
 		.REGLOADC("BYPASS"),
@@ -219,9 +284,13 @@ module \$__NX_MAC9X9WIDE_4LANE (input [8:0] A0, B0, A1, B1, A2, B2, A3, B3, inpu
 		.A2(A2), .B2(B2),
 		.A3(A3), .B3(B3),
 		.C(USE_C ? C : 54'b0),
+		.CLK(CLK),
+		.CEA0A1(CEA0A1), .CEA2A3(CEA2A3), .RSTA0A1(RSTA0A1), .RSTA2A3(RSTA2A3),
+		.CEB0B1(CEB0B1), .CEB2B3(CEB2B3), .RSTB0B1(RSTB0B1), .RSTB2B3(RSTB2B3),
 		.SIGNED(SIGNED ? 1'b1 : 1'b0),
 		.ADDSUB(4'b0000),
 		.LOADC(1'b1),
 		.Z(Y)
 	);
+	end endgenerate
 endmodule

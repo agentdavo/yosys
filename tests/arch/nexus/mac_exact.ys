@@ -1,0 +1,46 @@
+read_verilog -sv mac_exact.sv
+design -save pristine
+
+# reject
+# product truncated below the sum width
+design -load pristine
+hierarchy -top mac_trunc
+synth_nexus -family lifcl -top mac_trunc
+select -assert-count 0 t:MULTADDSUB18X18
+
+# signed product zero-extended into the sum
+design -load pristine
+hierarchy -top mac_signed_zext
+synth_nexus -family lifcl -top mac_signed_zext
+select -assert-count 0 t:MULTADDSUB18X18
+
+# same for the wide MAC
+design -load pristine
+hierarchy -top mac36_trunc
+synth_nexus -family lifcl -top mac36_trunc
+select -assert-count 0 t:MULTADDSUB36X36
+
+# truncated lane product
+design -load pristine
+hierarchy -top dot4_trunc_prod
+synth_nexus -family lifcl -top dot4_trunc_prod
+select -assert-count 0 t:MULTADDSUB9X9WIDE
+
+# truncated partial sum
+design -load pristine
+hierarchy -top dot4_trunc_sum
+synth_nexus -family lifcl -top dot4_trunc_sum
+select -assert-count 0 t:MULTADDSUB9X9WIDE
+
+# a truncated product cannot close the accumulator loop either
+design -load pristine
+hierarchy -top acc_trunc
+synth_nexus -family lifcl -top acc_trunc
+select -assert-count 0 t:MULTADDSUB18X18
+
+# product wider than the sum: low bits exact, still one MAC
+design -load pristine
+hierarchy -top mac_wide_prod
+synth_nexus -family lifcl -top mac_wide_prod
+select -assert-count 1 t:MULTADDSUB18X18
+select -assert-count 0 t:CCU2

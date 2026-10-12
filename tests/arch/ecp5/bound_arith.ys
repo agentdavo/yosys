@@ -1,0 +1,28 @@
+read_verilog -sv bound_arith.sv
+design -save pristine
+
+# The dot's adders shrink to 18 bits (15 CCU2C unbounded)
+design -load pristine
+hierarchy -top scale_after_dot
+synth_ecp5 -top scale_after_dot
+select -assert-count 5 t:MULT18X18D
+select -assert-max 9 t:CCU2C
+
+# The bounded dot fits an 18-bit operand, so -dsp-shift applies
+design -load pristine
+hierarchy -top shift_after_dot
+synth_ecp5 -dsp-shift -top shift_after_dot
+select -assert-count 5 t:MULT18X18D
+
+design -load pristine
+hierarchy -top trunc
+proc
+opt_clean
+wreduce
+opt_clean
+equiv_opt -assert -undef lattice_dsp_ecp5
+
+design -load pristine
+hierarchy -top wide
+proc
+equiv_opt -assert lattice_dsp_ecp5

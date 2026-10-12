@@ -662,6 +662,8 @@ void init_abc_executable_name()
 #  ifdef _WIN32
 	if (!check_file_exists(yosys_abc_executable + ".exe") && check_file_exists(proc_self_dirname() + "..\\" + proc_program_prefix() + "yosys-abc.exe"))
 		yosys_abc_executable = proc_self_dirname() + "..\\" + proc_program_prefix() + "yosys-abc";
+	if (check_file_exists(yosys_abc_executable + ".exe"))
+		yosys_abc_executable += ".exe";
 #  endif
 
 #  ifdef YOSYS_ENABLE_PYTHON

@@ -1,0 +1,81 @@
+read_verilog -sv mac_scale.sv
+design -save pristine
+
+# The dot's unused high bits are known, so the scale multiply is 18x8:
+# one MULT18X18 and no LUT partial product
+design -load pristine
+hierarchy -top scale_after_dot
+synth_nexus -family lifcl -top scale_after_dot
+select -assert-count 1 t:MULTADDSUB9X9WIDE
+select -assert-count 1 t:MULT18X18
+select -assert-count 0 t:CCU2
+
+# Registers on scale and y become the DSP input and output registers
+design -load pristine
+hierarchy -top scale_after_dot_reg
+synth_nexus -family lifcl -top scale_after_dot_reg
+select -assert-count 1 t:MULTADDSUB9X9WIDE
+select -assert-count 1 t:MULT18X18 r:REGINPUTB=REGISTER r:REGOUTPUT=REGISTER
+select -assert-count 0 t:FD1P3*
+select -assert-count 0 t:CCU2
+
+# Signed dot and signed scale
+design -load pristine
+hierarchy -top scale_after_dot_signed
+synth_nexus -family lifcl -top scale_after_dot_signed
+select -assert-count 1 t:MULTADDSUB9X9WIDE
+select -assert-count 1 t:MULT18X18 r:REGINPUTB=REGISTER r:REGOUTPUT=REGISTER
+select -assert-count 0 t:FD1P3*
+
+# Operand flops become the 4-lane input registers
+design -load pristine
+hierarchy -top q6k_group
+synth_nexus -family lifcl -top q6k_group
+select -assert-count 1 t:MULTADDSUB9X9WIDE r:REGINPUTAB0=REGISTER %i r:REGINPUTAB1=REGISTER %i r:REGINPUTAB2=REGISTER %i r:REGINPUTAB3=REGISTER %i
+select -assert-count 1 t:MULT18X18 r:REGINPUTB=REGISTER %i r:REGOUTPUT=REGISTER %i
+select -assert-count 0 t:FD1P3*
+
+# Lanes 0 and 1 with different enables: only lane 0 is absorbed
+design -load pristine
+hierarchy -top lanes_split_en
+synth_nexus -family lifcl -top lanes_split_en
+select -assert-count 1 t:MULTADDSUB9X9WIDE r:REGINPUTAB0=REGISTER %i
+select -assert-count 0 t:MULTADDSUB9X9WIDE r:REGINPUTAB1=REGISTER %i
+select -assert-count 8 t:FD1P3*
+
+# Shared scale register: both multiplies keep a registered B
+design -load pristine
+hierarchy -top shared_scale
+synth_nexus -family lifcl -top shared_scale
+select -assert-count 2 t:MULT* r:REGINPUTB=REGISTER r:REGOUTPUT=REGISTER %i
+select -assert-count 0 t:FD1P3*
+
+# ... and still computes the same thing
+design -load pristine
+hierarchy -top shared_scale
+proc
+rename shared_scale gold
+design -stash gold
+design -load pristine
+hierarchy -top shared_scale
+synth_nexus -family lifcl -noiopad -top shared_scale
+delete =A:blackbox
+read_verilog +/lattice/cells_sim_nexus.v
+hierarchy -top shared_scale
+proc
+flatten
+rename shared_scale gate
+design -stash gate
+design -copy-from gold -as gold gold
+design -copy-from gate -as gate gate
+miter -equiv -make_assert -flatten gold gate equiv
+hierarchy -top equiv
+sat -tempinduct -prove-asserts -set-init-zero -maxsteps 8 -verify equiv
+
+# reject
+# the product is read outside the register
+design -load pristine
+hierarchy -top shared_prod
+synth_nexus -family lifcl -top shared_prod
+select -assert-count 1 t:MULT18X18 r:REGOUTPUT=BYPASS
+select -assert-count 32 t:FD1P3*

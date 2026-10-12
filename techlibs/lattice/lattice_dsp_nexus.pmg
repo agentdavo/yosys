@@ -34,6 +34,11 @@ code
 		if (add->type == $sub && add_AB == \A)
 			reject;
 
+		// The DSP adds the full product. A truncated or differently
+		// extended product in the RTL gives a different sum.
+		if (!exact_product(sigmap, mul, add, add_AB, GetSize(port(add, \Y))))
+			reject;
+
 		Cell *mac = module->addCell(NEW_ID, "$__NX_MAC18X18");
 		IdString add_C = (add_AB == \A) ? \B : \A;
 
@@ -43,7 +48,7 @@ code
 		SigSpec sigC = port(add, add_C);
 		sigA.extend_u0(18, ab_signed);
 		sigB.extend_u0(18, ab_signed);
-		sigC.extend_u0(48, ab_signed);
+		sigC.extend_u0(48, add_is_signed(add));
 
 		mac->setPort(\A, sigA);
 		mac->setPort(\B, sigB);
@@ -99,14 +104,17 @@ code
 		if (add->type == $sub && add_AB == \A)
 			reject;
 
+		if (!exact_product(sigmap, mul, add, add_AB, GetSize(port(add, \Y))))
+			reject;
+
 		Cell *mac = module->addCell(NEW_ID, "$__NX_MAC36X36");
 		IdString add_C = (add_AB == \A) ? \B : \A;
 
 		bool ab_signed = mul->getParam(\A_SIGNED).as_bool();
-		// C's signedness is the adder port's, not the multiplier's. The
+		// C's signedness is the adder's, not the multiplier's. The
 		// primitive adds the full 108-bit CINPUT, so the extension here is
 		// the only sign treatment C gets.
-		bool c_signed = add->getParam(add_C == \A ? \A_SIGNED : \B_SIGNED).as_bool();
+		bool c_signed = add_is_signed(add);
 		SigSpec sigA = port(mul, \A);
 		SigSpec sigB = port(mul, \B);
 		SigSpec sigC = port(add, add_C);
@@ -261,6 +269,15 @@ code
 	}
 
 	{
+		// The matches above only join on bit 0. Every product and partial
+		// sum has to be the exact value the DSP adds.
+		int fw = GetSize(port(add_top, \Y));
+		if (fw > 54 ||
+		    !exact_product(sigmap, mul0, add_bot, \A, fw) || !exact_product(sigmap, mul1, add_bot, \B, fw) ||
+		    !exact_product(sigmap, mul2, add_mid, \B, fw) || !exact_product(sigmap, mul3, add_top, \B, fw) ||
+		    !exact_partial(sigmap, add_bot, add_mid, \A, fw) || !exact_partial(sigmap, add_mid, add_top, \A, fw))
+			reject;
+
 		Cell *mac = module->addCell(NEW_ID, "$__NX_MAC9X9WIDE_4LANE");
 
 		auto ext9 = [&](SigSpec s) {
@@ -375,15 +392,39 @@ code
 			reject;
 		}
 
+		int fw = GetSize(port(add_acc, \Y));
+		if (!exact_product(sigmap, mul0, add_bot, \A, fw) || !exact_product(sigmap, mul1, add_bot, \B, fw) ||
+		    !exact_product(sigmap, mul2, add_mid, \B, fw) || !exact_product(sigmap, mul3, add_top, \B, fw) ||
+		    !exact_partial(sigmap, add_bot, add_mid, \A, fw) || !exact_partial(sigmap, add_mid, add_top, \A, fw) ||
+		    !exact_partial(sigmap, add_top, add_acc, acc_AB, fw))
+			reject;
+
 		IdString acc_C = (acc_AB == \A) ? \B : \A;
-		bool c_signed = add_acc->getParam(acc_C == \A ? \A_SIGNED : \B_SIGNED).as_bool();
-
-		Cell *mac = module->addCell(NEW_ID, "$__NX_MAC9X9WIDE_4LANE");
-
+		bool c_signed = add_is_signed(add_acc);
+		// C has to be an external addend. Another product or partial sum
+		// belongs in a second 4-lane cell, not in this C port.
+		SigSpec sigC_raw = port(add_acc, acc_C);
+		bool c_is_arith = false;
+		for (auto cell : module->cells()) {
+			if (cell->type != $add && cell->type != $mul)
+				continue;
+			SigSpec y = cell->getPort(\Y);
+			for (int i = 0; i < GetSize(sigC_raw) && !c_is_arith; i++) {
+				if (!sigC_raw[i].wire)
+					continue;
+				for (int j = 0; j < GetSize(y); j++)
+					if (sigC_raw[i] == y[j])
+						c_is_arith = true;
+			}
+		}
 		auto ext9 = [&](SigSpec s) {
 			s.extend_u0(9, is_signed);
 			return s;
 		};
+		if (c_is_arith)
+			reject;
+
+		Cell *mac = module->addCell(NEW_ID, "$__NX_MAC9X9WIDE_4LANE");
 
 		mac->setPort(\A0, ext9(port(mul0, \A)));
 		mac->setPort(\B0, ext9(port(mul0, \B)));
@@ -485,21 +526,37 @@ code
 	}
 
 	{
-		auto low_eq = [&](SigSpec wide, SigSpec narrow) {
-			return GetSize(wide) >= GetSize(narrow) && wide.extract(0, GetSize(narrow)) == narrow;
-		};
-		if (!low_eq(port(add0, \B), port(mul0, \Y)) || !low_eq(port(add1, \B), port(mul1, \Y)) ||
-		    !low_eq(port(add2, \B), port(mul2, \Y)) || !low_eq(port(add3, \B), port(mul3, \Y)) ||
-		    !low_eq(port(add1, \A), port(add0, \Y)) || !low_eq(port(add2, \A), port(add1, \Y)) ||
-		    !low_eq(port(add3, \A), port(add2, \Y)))
-			reject;
-		bool c_signed = add0->getParam(\A_SIGNED).as_bool();
-		Cell *mac = module->addCell(NEW_ID, "$__NX_MAC9X9WIDE_4LANE");
-
+		// The A port must be an external addend. If an $add or $mul drives
+		// it, this is a longer product chain and the tail pattern should
+		// split it into 4-lane blocks.
+		SigSpec prefix = port(add0, \A);
+		bool prefix_is_narrow_mul = false;
+		for (auto cell : module->cells()) {
+			if (cell->type != $add && cell->type != $mul)
+				continue;
+			SigSpec y = cell->getPort(\Y);
+			for (int i = 0; i < GetSize(prefix) && !prefix_is_narrow_mul; i++) {
+				if (!prefix[i].wire)
+					continue;
+				for (int j = 0; j < GetSize(y); j++)
+					if (prefix[i] == y[j])
+						prefix_is_narrow_mul = true;
+			}
+		}
+		// Every product and partial sum must be the exact value the DSP adds.
+		int fw = GetSize(port(add3, \Y));
+		bool c_signed = add_is_signed(add0);
 		auto ext9 = [&](SigSpec s) {
 			s.extend_u0(9, is_signed);
 			return s;
 		};
+		if (prefix_is_narrow_mul || fw > 54 ||
+		    !exact_product(sigmap, mul0, add0, \B, fw) || !exact_product(sigmap, mul1, add1, \B, fw) ||
+		    !exact_product(sigmap, mul2, add2, \B, fw) || !exact_product(sigmap, mul3, add3, \B, fw) ||
+		    !exact_partial(sigmap, add0, add1, \A, fw) || !exact_partial(sigmap, add1, add2, \A, fw) ||
+		    !exact_partial(sigmap, add2, add3, \A, fw))
+			reject;
+		Cell *mac = module->addCell(NEW_ID, "$__NX_MAC9X9WIDE_4LANE");
 
 		mac->setPort(\A0, ext9(port(mul0, \A)));
 		mac->setPort(\B0, ext9(port(mul0, \B)));
@@ -534,15 +591,235 @@ code
 	accept;
 endcode
 
+// Four more <=9 products stacked on a wider prefix:
+// (((prefix + m0) + m1) + m2) + m3. A pure four-product dot is left
+// for nexus_mac9_4lane, which needs no leftover add. Run before
+// nexus_mac18 so the extra products are not each widened to 18x18.
+pattern nexus_mac9_4lane_tail
+
+match add0
+	select add0->type == $add
+endmatch
+
+match mul0
+	select mul0->type == $mul
+	select GetSize(port(mul0, \A)) <= 9 && GetSize(port(mul0, \B)) <= 9
+	index <SigBit> port(mul0, \Y)[0] === port(add0, \B)[0]
+endmatch
+
+match add1
+	select add1->type == $add
+	index <SigBit> port(add1, \A)[0] === port(add0, \Y)[0]
+endmatch
+
+match mul1
+	select mul1->type == $mul
+	select GetSize(port(mul1, \A)) <= 9 && GetSize(port(mul1, \B)) <= 9
+	index <SigBit> port(mul1, \Y)[0] === port(add1, \B)[0]
+endmatch
+
+match add2
+	select add2->type == $add
+	index <SigBit> port(add2, \A)[0] === port(add1, \Y)[0]
+endmatch
+
+match mul2
+	select mul2->type == $mul
+	select GetSize(port(mul2, \A)) <= 9 && GetSize(port(mul2, \B)) <= 9
+	index <SigBit> port(mul2, \Y)[0] === port(add2, \B)[0]
+endmatch
+
+match add3
+	select add3->type == $add
+	select GetSize(port(add3, \Y)) <= 54
+	index <SigBit> port(add3, \A)[0] === port(add2, \Y)[0]
+endmatch
+
+match mul3
+	select mul3->type == $mul
+	select GetSize(port(mul3, \A)) <= 9 && GetSize(port(mul3, \B)) <= 9
+	index <SigBit> port(mul3, \Y)[0] === port(add3, \B)[0]
+endmatch
+
+code
+	bool is_signed = mul0->getParam(\A_SIGNED).as_bool();
+
+	if (
+		mul0->getParam(\B_SIGNED).as_bool() != is_signed ||
+		mul1->getParam(\A_SIGNED).as_bool() != is_signed ||
+		mul1->getParam(\B_SIGNED).as_bool() != is_signed ||
+		mul2->getParam(\A_SIGNED).as_bool() != is_signed ||
+		mul2->getParam(\B_SIGNED).as_bool() != is_signed ||
+		mul3->getParam(\A_SIGNED).as_bool() != is_signed ||
+		mul3->getParam(\B_SIGNED).as_bool() != is_signed
+	) {
+		reject;
+	}
+
+	{
+		SigSpec prefix = port(add0, \A);
+		bool prefix_is_narrow_mul = false;
+		for (auto cell : module->cells()) {
+			if (cell->type != $mul)
+				continue;
+			if (GetSize(cell->getPort(ID::A)) > 9 || GetSize(cell->getPort(ID::B)) > 9)
+				continue;
+			SigSpec my = cell->getPort(ID::Y);
+			if (GetSize(prefix) >= GetSize(my) && prefix.extract(0, GetSize(my)) == my)
+				prefix_is_narrow_mul = true;
+		}
+		// Every product and partial sum must be the exact value the DSP adds.
+		int fw = GetSize(port(add3, \Y));
+		bool aligned =
+			exact_product(sigmap, mul0, add0, \B, fw) && exact_product(sigmap, mul1, add1, \B, fw) &&
+			exact_product(sigmap, mul2, add2, \B, fw) && exact_product(sigmap, mul3, add3, \B, fw) &&
+			exact_partial(sigmap, add0, add1, \A, fw) && exact_partial(sigmap, add1, add2, \A, fw) &&
+			exact_partial(sigmap, add2, add3, \A, fw);
+		bool c_signed = add_is_signed(add0);
+		auto ext9 = [&](SigSpec s) {
+			s.extend_u0(9, is_signed);
+			return s;
+		};
+		if (prefix_is_narrow_mul || !aligned)
+			reject;
+		Cell *mac = module->addCell(NEW_ID, "$__NX_MAC9X9WIDE_4LANE");
+
+		mac->setPort(\A0, ext9(port(mul0, \A)));
+		mac->setPort(\B0, ext9(port(mul0, \B)));
+		mac->setPort(\A1, ext9(port(mul1, \A)));
+		mac->setPort(\B1, ext9(port(mul1, \B)));
+		mac->setPort(\A2, ext9(port(mul2, \A)));
+		mac->setPort(\B2, ext9(port(mul2, \B)));
+		mac->setPort(\A3, ext9(port(mul3, \A)));
+		mac->setPort(\B3, ext9(port(mul3, \B)));
+		// The prefix sum is the addend. ACC54 adds it, so the two
+		// 4-lane blocks do not need a fabric carry between them.
+		prefix.extend_u0(54, c_signed);
+		mac->setPort(\C, prefix);
+		SigSpec sigY = port(add3, \Y);
+		if (GetSize(sigY) < 54)
+			sigY.append(module->addWire(NEW_ID, 54 - GetSize(sigY)));
+		mac->setPort(\Y, sigY);
+		mac->setParam(\SIGNED, is_signed ? State::S1 : State::S0);
+		mac->setParam(\USE_C, State::S1);
+
+		autoremove(add0);
+		autoremove(add1);
+		autoremove(add2);
+		autoremove(add3);
+		autoremove(mul0);
+		autoremove(mul1);
+		autoremove(mul2);
+		autoremove(mul3);
+	}
+
+	accept;
+endcode
+
+// Running accumulator: a MAC whose sum is registered and fed back as its
+// own addend, p <= p +/- A*B. ACC54 already routes its output register
+// back as the addend when LOADC is low, so the flop moves into the DSP
+// (REGOUTPUT) and the loop never leaves the block. Runs on the MAC cells
+// the patterns above created, so it needs its own matcher pass.
+pattern nexus_mac_acc
+
+state <SigSpec> sigD
+
+match mac
+	select mac->type.in($__NX_MAC18X18, $__NX_MAC9X9WIDE_4LANE)
+	select mac->type == $__NX_MAC18X18 || param(mac, \USE_C, Const(0, 1)).as_bool()
+endmatch
+
+// Only the low Y bits that something reads can be a register D.
+code sigD
+	SigSpec y = port(mac, \Y);
+	int w = GetSize(y);
+	while (w > 0 && nusers(y[w-1]) <= 1)
+		w--;
+	if (w == 0)
+		reject;
+	sigD = y.extract(0, w);
+endcode
+
+match ff
+	select ff->type.in($dff, $dffe, $sdff, $sdffe)
+	select param(ff, \CLK_POLARITY).as_bool()
+	filter ff->type.in($dff, $dffe) || param(ff, \SRST_VALUE).is_fully_zero()
+	filter GetSize(port(ff, \D)) == GetSize(sigD)
+	index <SigSpec> port(ff, \D) === sigD
+endmatch
+
+code
+	SigSpec q = port(ff, \Q);
+	SigSpec c = port(mac, \C);
+	int w = GetSize(sigD);
+
+	// The addend must be exactly the register. Its upper C bits are only
+	// an extension of it; the low w bits of Z + P do not depend on them.
+	if (GetSize(c) < w || c.extract(0, w) != q)
+		reject;
+
+	// The sum must not be read anywhere but the register, since it stops
+	// existing once the register is inside the DSP.
+	if (nusers(sigD) != 2)
+		reject;
+
+	for (auto bit : q) {
+		if (!bit.wire)
+			reject;
+		auto it = bit.wire->attributes.find(\init);
+		if (it == bit.wire->attributes.end())
+			continue;
+		if (bit.offset < GetSize(it->second)) {
+			State s = it->second[bit.offset];
+			if (s != State::Sx && s != State::S0)
+				reject;
+		}
+	}
+
+	{
+		SigBit ce = State::S1;
+		if (ff->type.in($dffe, $sdffe)) {
+			ce = port(ff, \EN)[0];
+			if (!param(ff, \EN_POLARITY).as_bool())
+				ce = module->NotGate(NEW_ID, ce);
+		}
+		SigBit rst = State::S0;
+		if (ff->type.in($sdff, $sdffe)) {
+			rst = port(ff, \SRST)[0];
+			if (!param(ff, \SRST_POLARITY).as_bool())
+				rst = module->NotGate(NEW_ID, rst);
+		}
+
+		SigSpec y = port(mac, \Y);
+		SigSpec new_y = q;
+		new_y.append(y.extract_end(w));
+		mac->setPort(\Y, new_y);
+		mac->setPort(\C, Const(State::S0, GetSize(c)));
+		mac->setPort(\CLK, port(ff, \CLK)[0]);
+		mac->setPort(\CEOUT, ce);
+		mac->setPort(\RSTOUT, rst);
+		mac->setParam(\ACCUM, State::S1);
+
+		autoremove(ff);
+	}
+
+	accept;
+endcode
+
 pattern nexus_mul_reg
 
 state <SigBit> clk
 state <SigSpec> argQ argD
+state <bool> argSigned
 state <Cell*> ffA ffB ffY
 
 udata <Cell*> dff
 udata <SigBit> dffclk
 udata <SigSpec> dffD dffQ
+udata <pool<Cell*>> copied_ffs
+// Set by lattice_dsp_ecp5: only a single 18x18 MULT18X18D per multiply.
+udata <bool> ecp5
 
 match mul
 	select mul->type.in($mul)
@@ -571,8 +848,9 @@ code argQ ffB clk
 endcode
 
 // Absorb the FF on the mul output
-code argD ffY clk
+code argD argSigned ffY clk
 	argD = port(mul, \Y);
+	argSigned = mul->getParam(\A_SIGNED).as_bool() && mul->getParam(\B_SIGNED).as_bool();
 	subpattern(out_ff);
 	if (dff) {
 		ffY = dff;
@@ -591,7 +869,15 @@ code
 		int A_PINS;
 		int B_PINS;
 
-		if (aw <= 18 && bw <= 18) {
+		if (ecp5) {
+			// A wider multiply is split into several MULT18X18D and a
+			// fabric adder tree; there is no one register to absorb.
+			if (aw > 18 || bw > 18)
+				reject;
+			prim = "$__MUL18X18";
+			A_PINS = 18;
+			B_PINS = 18;
+		} else if (aw <= 18 && bw <= 18) {
 			prim = "$__NX_MUL18X18";
 			A_PINS = 18;
 			B_PINS = 18;
@@ -612,13 +898,23 @@ code
 		bool a_signed = mul->getParam(\A_SIGNED).as_bool();
 		bool b_signed = mul->getParam(\B_SIGNED).as_bool();
 		// Drive the DSP from the FF's D
-		SigSpec sigA = ffA ? port(ffA, \D) : port(mul, \A);
-		SigSpec sigB = ffB ? port(ffB, \D) : port(mul, \B);
+		Cell *inA = ffA, *inB = ffB;
+		// nextpnr-ecp5 has MULT18X18D timing only for both inputs
+		// registered or neither. With one it times the block as neither,
+		// and the logic in front of the absorbed register then lands on
+		// the multiplier path, so it reports a slower design than before.
+		if (ecp5 && (inA != nullptr) != (inB != nullptr)) {
+			inA = inB = nullptr;
+			if (!ffY)
+				reject;
+		}
+		SigSpec sigA = inA ? port(inA, \D) : port(mul, \A);
+		SigSpec sigB = inB ? port(inB, \D) : port(mul, \B);
 		SigSpec sigY = ffY ? port(ffY, \Q) : port(mul, \Y);
 
 		// 36X18 -> wide operand goes to A
-		Cell *ffa = ffA;
-		Cell *ffb = ffB;
+		Cell *ffa = inA;
+		Cell *ffb = inB;
 		if (prim == "$__NX_MUL36X18" && aw <= 18 && bw <= 36) {
 			std::swap(sigA, sigB);
 			std::swap(a_signed, b_signed);
@@ -678,8 +974,11 @@ code
 		cell->setParam(\REGINPUTB, ffb ? std::string("REGISTER") : std::string("BYPASS"));
 		cell->setParam(\REGOUTPUT, ffY ? std::string("REGISTER") : std::string("BYPASS"));
 
-		if (ffa) autoremove(ffa);
-		if (ffb && ffb != ffa) autoremove(ffb);
+		// An input register is copied into the DSP, not moved: something
+		// else (another multiply sharing a scale, say) may read its Q.
+		// opt_clean drops the fabric copy once nothing does.
+		if (ffa) copied_ffs.insert(ffa);
+		if (ffb) copied_ffs.insert(ffb);
 		if (ffY) autoremove(ffY);
 		autoremove(mul);
 
@@ -726,7 +1025,7 @@ code
 endcode
 
 subpattern out_ff
-arg argD clk
+arg argD clk argSigned
 
 code
 	dff = nullptr;
@@ -736,12 +1035,32 @@ match ff
 	select ff->type.in($dff, $dffe, $sdff, $sdffe)
 	select param(ff, \CLK_POLARITY).as_bool()
 	filter ff->type.in($dff, $dffe) || param(ff, \SRST_VALUE).is_fully_zero()
-	filter GetSize(port(ff, \D)) == GetSize(argD)
-	index <SigSpec> port(ff, \D) === argD
+	filter GetSize(port(ff, \D)) >= GetSize(argD)
+	index <SigBit> port(ff, \D)[0] === argD[0]
 endmatch
 
 code
 	if (clk != SigBit() && sigmap(port(ff, \CLK)[0]) != clk)
+		reject;
+
+	// The register may be wider than the product when bound_arith has
+	// narrowed it: its extra D bits must then be the product's extension,
+	// which the DSP computes anyway.
+	{
+		SigSpec d = port(ff, \D);
+		int n = GetSize(argD);
+		if (d.extract(0, n) != argD)
+			reject;
+		SigBit ext = argSigned ? argD[n - 1] : SigBit(State::S0);
+		for (int i = n; i < GetSize(d); i++)
+			if (d[i] != ext)
+				reject;
+	}
+
+	// Once the register moves into the DSP the product no longer exists,
+	// so nothing but the register may read it. A register already copied
+	// into another DSP's input reads this D and must stay in the fabric.
+	if (nusers(argD) != 2 || copied_ffs.count(ff))
 		reject;
 
 	for (auto bit : sigmap(port(ff, \Q))) {
