@@ -1,0 +1,67 @@
+# A register packed into a DSP may be wider than the bits the DSP takes.
+# A non-zero init outside those bits must not stop packing (#6046).
+
+# A and B are slices of one counter: r[7:0] has a set init bit and stays in
+# fabric, r[15:8] does not and becomes the B register
+read_verilog <<EOT
+module top(input clk, output signed [15:0] p);
+	reg [31:0] r = 32'h1;
+	always @(posedge clk) r <= r + 1;
+	reg signed [15:0] pr = 0;
+	always @(posedge clk) pr <= $signed(r[7:0]) * $signed(r[15:8]);
+	assign p = pr;
+endmodule
+EOT
+synth_xilinx -family xc7 -noiopad
+cd top
+select -assert-count 1 t:DSP48E1
+select -assert-count 1 t:DSP48E1 r:AREG=0 %i r:BREG=1 %i
+
+# One operand is enough: r[15:8] becomes the A register of a DSP48A1
+design -reset
+read_verilog <<EOT
+module top(input clk, input signed [7:0] x, output signed [15:0] p);
+	reg [31:0] r = 32'h1;
+	always @(posedge clk) r <= r + 1;
+	reg signed [15:0] pr = 0;
+	always @(posedge clk) pr <= $signed(r[15:8]) * x;
+	assign p = pr;
+endmodule
+EOT
+synth_xilinx -family xc6s -noiopad
+cd top
+select -assert-count 1 t:DSP48A1
+select -assert-count 1 t:DSP48A1 r:A1REG=1 %i
+
+# An output register wider than the product, set outside the product bits
+design -reset
+read_verilog <<EOT
+module top(input clk, input signed [7:0] a, b, input [7:0] c, output [23:0] q);
+	reg [23:0] r = 24'h010000;
+	always @(posedge clk) begin
+		r[15:0] <= a * b;
+		r[23:16] <= c;
+	end
+	assign q = r;
+endmodule
+EOT
+synth_xilinx -family xc7 -noiopad
+cd top
+select -assert-count 1 t:DSP48E1
+select -assert-count 1 t:DSP48E1 r:MREG=1'b1 %i
+
+# A C register taken from the top half of a register whose low half is set
+design -reset
+read_verilog <<EOT
+module top(input clk, input signed [7:0] a, b, input [15:0] x, output [31:0] q);
+	reg [31:0] cr = 32'h1;
+	always @(posedge clk) cr <= {x, x} + 1;
+	reg [31:0] pr = 0;
+	always @(posedge clk) pr <= a * b + cr[31:16];
+	assign q = {pr[15:0], cr[15:0]};
+endmodule
+EOT
+synth_xilinx -family xc7 -noiopad
+cd top
+select -assert-count 1 t:DSP48E1
+select -assert-count 1 t:DSP48E1 r:CREG=1 %i

@@ -373,6 +373,11 @@ void xilinx_dsp_pack(xilinx_dsp_pm &pm)
 		auto f = [&pm,cell](SigSpec &A, Cell* ff, IdString ceport, IdString rstport) {
 			SigSpec D = ff->getPort(ID::D);
 			SigSpec Q = pm.sigmap(ff->getPort(ID::Q));
+			// 'ff' may be wider than the part packed into the DSP. The
+			//   matcher only checked the init value of the packed bits (the
+			//   bits of Q in 'A'); the rest stay in fabric with their own
+			//   init, so only the packed bits are cleared below.
+			SigSpec packedQ = Q.extract(A);
 			if (!A.empty())
 				A.replace(Q, D);
 			if (rstport != IdString::Null) {
@@ -392,7 +397,7 @@ void xilinx_dsp_pack(xilinx_dsp_pm &pm)
 			else
 				cell->setPort(ceport, State::S1);
 
-			for (auto c : Q.chunks()) {
+			for (auto c : packedQ.chunks()) {
 				auto it = c.wire->attributes.find(ID::init);
 				if (it == c.wire->attributes.end())
 					continue;
@@ -441,13 +446,13 @@ void xilinx_dsp_pack(xilinx_dsp_pm &pm)
 			cell->setParam(ID(DREG), 1);
 		}
 		if (st.ffM) {
-			SigSpec M; // unused
+			SigSpec M = st.sigM; // tells f() which bits of ffM are packed
 			f(M, st.ffM, ID(CEM), ID(RSTM));
 			st.ffM->connections_.at(ID::Q).replace(st.sigM, pm.module->addWire(NEW_ID, GetSize(st.sigM)));
 			cell->setParam(ID(MREG), State::S1);
 		}
 		if (st.ffP) {
-			SigSpec P; // unused
+			SigSpec P = st.sigP; // tells f() which bits of ffP are packed
 			f(P, st.ffP, ID(CEP), ID(RSTP));
 			st.ffP->connections_.at(ID::Q).replace(st.sigP, pm.module->addWire(NEW_ID, GetSize(st.sigP)));
 			cell->setParam(ID(PREG), State::S1);
@@ -560,6 +565,11 @@ void xilinx_dsp48a_pack(xilinx_dsp48a_pm &pm)
 		auto f = [&pm,cell](SigSpec &A, Cell* ff, IdString ceport, IdString rstport) {
 			SigSpec D = ff->getPort(ID::D);
 			SigSpec Q = pm.sigmap(ff->getPort(ID::Q));
+			// 'ff' may be wider than the part packed into the DSP. The
+			//   matcher only checked the init value of the packed bits (the
+			//   bits of Q in 'A'); the rest stay in fabric with their own
+			//   init, so only the packed bits are cleared below.
+			SigSpec packedQ = Q.extract(A);
 			if (!A.empty())
 				A.replace(Q, D);
 			if (rstport != IdString::Null) {
@@ -579,7 +589,7 @@ void xilinx_dsp48a_pack(xilinx_dsp48a_pm &pm)
 			else
 				cell->setPort(ceport, State::S1);
 
-			for (auto c : Q.chunks()) {
+			for (auto c : packedQ.chunks()) {
 				auto it = c.wire->attributes.find(ID::init);
 				if (it == c.wire->attributes.end())
 					continue;
@@ -624,13 +634,13 @@ void xilinx_dsp48a_pack(xilinx_dsp48a_pm &pm)
 			cell->setParam(ID(DREG), 1);
 		}
 		if (st.ffM) {
-			SigSpec M; // unused
+			SigSpec M = st.sigM; // tells f() which bits of ffM are packed
 			f(M, st.ffM, ID(CEM), ID(RSTM));
 			st.ffM->connections_.at(ID::Q).replace(st.sigM, pm.module->addWire(NEW_ID, GetSize(st.sigM)));
 			cell->setParam(ID(MREG), State::S1);
 		}
 		if (st.ffP) {
-			SigSpec P; // unused
+			SigSpec P = st.sigP; // tells f() which bits of ffP are packed
 			f(P, st.ffP, ID(CEP), ID(RSTP));
 			st.ffP->connections_.at(ID::Q).replace(st.sigP, pm.module->addWire(NEW_ID, GetSize(st.sigP)));
 			cell->setParam(ID(PREG), State::S1);
@@ -684,6 +694,11 @@ void xilinx_dsp_packC(xilinx_dsp_CREG_pm &pm)
 		auto f = [&pm,cell](SigSpec &A, Cell* ff, IdString ceport, IdString rstport) {
 			SigSpec D = ff->getPort(ID::D);
 			SigSpec Q = pm.sigmap(ff->getPort(ID::Q));
+			// 'ff' may be wider than the part packed into the DSP. The
+			//   matcher only checked the init value of the packed bits (the
+			//   bits of Q in 'A'); the rest stay in fabric with their own
+			//   init, so only the packed bits are cleared below.
+			SigSpec packedQ = Q.extract(A);
 			if (!A.empty())
 				A.replace(Q, D);
 			if (rstport != IdString::Null) {
@@ -703,7 +718,7 @@ void xilinx_dsp_packC(xilinx_dsp_CREG_pm &pm)
 			else
 				cell->setPort(ceport, State::S1);
 
-			for (auto c : Q.chunks()) {
+			for (auto c : packedQ.chunks()) {
 				auto it = c.wire->attributes.find(ID::init);
 				if (it == c.wire->attributes.end())
 					continue;

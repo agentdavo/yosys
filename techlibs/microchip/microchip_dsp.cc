@@ -90,6 +90,11 @@ void microchip_dsp_pack(microchip_dsp_pm &pm)
 			// input/output ports
 			SigSpec D = ff->getPort(ID::D);
 			SigSpec Q = pm.sigmap(ff->getPort(ID::Q));
+			// 'ff' may be wider than the part packed into the DSP. The
+			//   matcher only checked the init value of the packed bits (the
+			//   bits of Q in 'A'); the rest stay in fabric with their own
+			//   init, so only the packed bits are cleared below.
+			SigSpec packedQ = Q.extract(A);
 
 			if (!A.empty())
 				A.replace(Q, D);
@@ -122,7 +127,7 @@ void microchip_dsp_pack(microchip_dsp_pm &pm)
 			// bypass set to 0
 			cell->setPort(bypass, State::S0);
 
-			for (auto c : Q.chunks()) {
+			for (auto c : packedQ.chunks()) {
 				auto it = c.wire->attributes.find(ID::init);
 				if (it == c.wire->attributes.end())
 					continue;
@@ -163,7 +168,7 @@ void microchip_dsp_pack(microchip_dsp_pm &pm)
 			cell->setPort(ID::D, D);
 		}
 		if (st.ffP) {
-			SigSpec P; // unused
+			SigSpec P = st.sigP; // tells f() which bits of ffP are packed
 			f(P, st.ffP, ID(P_EN), ID(P_SRST_N), ID(P_BYPASS));
 			st.ffP->connections_.at(ID::Q).replace(st.sigP, pm.module->addWire(NEW_ID, GetSize(st.sigP)));
 		}
@@ -207,6 +212,11 @@ void microchip_dsp_packC(microchip_dsp_CREG_pm &pm)
 			// input/output ports
 			SigSpec D = ff->getPort(ID::D);
 			SigSpec Q = pm.sigmap(ff->getPort(ID::Q));
+			// 'ff' may be wider than the part packed into the DSP. The
+			//   matcher only checked the init value of the packed bits (the
+			//   bits of Q in 'A'); the rest stay in fabric with their own
+			//   init, so only the packed bits are cleared below.
+			SigSpec packedQ = Q.extract(A);
 			if (!A.empty())
 				A.replace(Q, D);
 			if (rstport != IdString::Null) {
@@ -238,7 +248,7 @@ void microchip_dsp_packC(microchip_dsp_CREG_pm &pm)
 			// bypass set to 0
 			cell->setPort(bypass, State::S0);
 
-			for (auto c : Q.chunks()) {
+			for (auto c : packedQ.chunks()) {
 				auto it = c.wire->attributes.find(ID::init);
 				if (it == c.wire->attributes.end())
 					continue;

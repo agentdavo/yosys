@@ -1,0 +1,32 @@
+# A register packed into a DSP may be wider than the bits the DSP takes.
+# A non-zero init outside those bits must not stop packing (#6046).
+# PolarFire flops have no init value, so stop once the DSPs are packed.
+
+# r[15:8] becomes an input register; r[0] is set and stays in fabric
+read_verilog <<EOT
+module top(input clk, input signed [7:0] x, output signed [15:0] p);
+	reg [31:0] r = 32'h1;
+	always @(posedge clk) r <= r + 1;
+	reg signed [15:0] pr = 0;
+	always @(posedge clk) pr <= $signed(r[15:8]) * x;
+	assign p = pr;
+endmodule
+EOT
+synth_microchip -top top -family polarfire -noiopad -run :coarse
+cd top
+select -assert-count 1 t:MACC_PA
+
+# A C register taken from the top half of a register whose low half is set
+design -reset
+read_verilog <<EOT
+module top(input clk, input signed [7:0] a, b, input [15:0] x, output [31:0] q);
+	reg [31:0] cr = 32'h1;
+	always @(posedge clk) cr <= {x, x} + 1;
+	reg [31:0] pr = 0;
+	always @(posedge clk) pr <= a * b + cr[31:16];
+	assign q = {pr[15:0], cr[15:0]};
+endmodule
+EOT
+synth_microchip -top top -family polarfire -noiopad -run :coarse
+cd top
+select -assert-count 1 t:MACC_PA
