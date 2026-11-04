@@ -1,0 +1,62 @@
+read_verilog -sv mac_fp16.sv
+design -save pristine
+
+# Sign and two shift bits fold into the mantissa operand
+design -load pristine
+hierarchy -top dot_fp16_scale
+synth_nexus -family lifcl -top dot_fp16_scale -run :map_luts
+select -assert-count 1 t:MULTADDSUB9X9WIDE
+select -assert-count 1 t:MULT18X18
+select -assert-max 8 t:CCU2
+
+# -wide-scale: four of the five shift bits fold, and the multiply takes
+# MULT18X36; the shift lands on the mantissa, not on the dot
+design -load pristine
+hierarchy -top dot_fp16_scale
+synth_nexus -family lifcl -wide-scale -top dot_fp16_scale -run :map_luts
+select -assert-count 1 t:MULTADDSUB9X9WIDE
+select -assert-count 1 t:MULT18X36
+select -assert-count 0 t:MULT18X18
+
+# Whole scale folded: dot, scale and accumulate in two DSP cells
+design -load pristine
+hierarchy -top minifloat_acc
+synth_nexus -family lifcl -top minifloat_acc
+select -assert-count 1 t:MULTADDSUB9X9WIDE
+select -assert-count 1 t:MULTADDSUB18X18 r:REGOUTPUT=REGISTER %i
+select -assert-count 0 t:FD1P3*
+
+# ... and still computes the same thing
+design -load pristine
+hierarchy -top minifloat_acc
+proc
+rename minifloat_acc gold
+design -stash gold
+design -load pristine
+hierarchy -top minifloat_acc
+synth_nexus -family lifcl -noiopad -top minifloat_acc
+delete =A:blackbox
+read_verilog +/lattice/cells_sim_nexus.v
+hierarchy -top minifloat_acc
+proc
+flatten
+rename minifloat_acc gate
+design -stash gate
+design -copy-from gold -as gold gold
+design -copy-from gate -as gate gate
+miter -equiv -make_assert -flatten gold gate equiv
+hierarchy -top equiv
+sat -tempinduct -prove-asserts -set-init-zero -maxsteps 8 -verify equiv
+
+# reject
+design -load pristine
+hierarchy -top no_headroom
+proc
+lattice_dsp_nexus
+select -assert-count 1 t:$neg
+
+design -load pristine
+hierarchy -top prod_seen
+proc
+lattice_dsp_nexus
+select -assert-count 1 t:$neg

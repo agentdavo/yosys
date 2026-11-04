@@ -293,15 +293,104 @@ code
 	accept;
 endcode
 
+pattern nexus_mac_acc
+
+state <SigSpec> sigD
+
+match mac
+	select mac->type.in($__NX_MAC18X18, $__NX_MAC9X9WIDE_4LANE)
+endmatch
+
+// Only the low Y bits that something reads can be a register D.
+code sigD
+	SigSpec y = port(mac, \Y);
+	int w = GetSize(y);
+	while (w > 0 && nusers(y[w-1]) <= 1)
+		w--;
+	if (w == 0)
+		reject;
+	sigD = y.extract(0, w);
+endcode
+
+match ff
+	select ff->type.in($dff, $dffe, $sdff, $sdffe)
+	select param(ff, \CLK_POLARITY).as_bool()
+	filter ff->type.in($dff, $dffe) || param(ff, \SRST_VALUE).is_fully_zero()
+	filter GetSize(port(ff, \D)) == GetSize(sigD)
+	index <SigSpec> port(ff, \D) === sigD
+endmatch
+
+code
+	SigSpec q = port(ff, \Q);
+	SigSpec c = port(mac, \C);
+	int w = GetSize(sigD);
+
+	// The addend must be exactly the register. Its upper C bits are only
+	// an extension of it; the low w bits of Z + P do not depend on them.
+	if (GetSize(c) < w || c.extract(0, w) != q)
+		reject;
+
+	// The sum must not be read anywhere but the register, since it stops
+	// existing once the register is inside the DSP.
+	if (nusers(sigD) != 2)
+		reject;
+
+	for (auto bit : q) {
+		if (!bit.wire)
+			reject;
+		auto it = bit.wire->attributes.find(\init);
+		if (it == bit.wire->attributes.end())
+			continue;
+		if (bit.offset < GetSize(it->second)) {
+			State s = it->second[bit.offset];
+			if (s != State::Sx && s != State::S0)
+				reject;
+		}
+	}
+
+	{
+		SigBit ce = State::S1;
+		if (ff->type.in($dffe, $sdffe)) {
+			ce = port(ff, \EN)[0];
+			if (!param(ff, \EN_POLARITY).as_bool())
+				ce = module->NotGate(NEW_ID, ce);
+		}
+		SigBit rst = State::S0;
+		if (ff->type.in($sdff, $sdffe)) {
+			rst = port(ff, \SRST)[0];
+			if (!param(ff, \SRST_POLARITY).as_bool())
+				rst = module->NotGate(NEW_ID, rst);
+		}
+
+		SigSpec y = port(mac, \Y);
+		SigSpec new_y = q;
+		new_y.append(y.extract_end(w));
+		mac->setPort(\Y, new_y);
+		mac->setPort(\C, Const(State::S0, GetSize(c)));
+		mac->setPort(\CLK, port(ff, \CLK)[0]);
+		mac->setPort(\CEOUT, ce);
+		mac->setPort(\RSTOUT, rst);
+		mac->setParam(\ACCUM, State::S1);
+
+		autoremove(ff);
+	}
+
+	accept;
+endcode
+
 pattern nexus_mul_reg
 
 state <SigBit> clk
 state <SigSpec> argQ argD
+state <bool> argSigned
 state <Cell*> ffA ffB ffY
 
 udata <Cell*> dff
 udata <SigBit> dffclk
 udata <SigSpec> dffD dffQ
+udata <pool<Cell*>> copied_ffs
+// Set by lattice_dsp_ecp5: only a single 18x18 MULT18X18D per multiply.
+udata <bool> ecp5
 
 match mul
 	select mul->type.in($mul)
@@ -330,8 +419,9 @@ code argQ ffB clk
 endcode
 
 // Absorb the FF on the mul output
-code argD ffY clk
+code argD argSigned ffY clk
 	argD = port(mul, \Y);
+	argSigned = mul->getParam(\A_SIGNED).as_bool() && mul->getParam(\B_SIGNED).as_bool();
 	subpattern(out_ff);
 	if (dff) {
 		ffY = dff;
@@ -350,7 +440,15 @@ code
 		int A_PINS;
 		int B_PINS;
 
-		if (aw <= 18 && bw <= 18) {
+		if (ecp5) {
+			// A wider multiply is split into several MULT18X18D and a
+			// fabric adder tree; there is no one register to absorb.
+			if (aw > 18 || bw > 18)
+				reject;
+			prim = $__MUL18X18;
+			A_PINS = 18;
+			B_PINS = 18;
+		} else if (aw <= 18 && bw <= 18) {
 			prim = $__NX_MUL18X18;
 			A_PINS = 18;
 			B_PINS = 18;
@@ -371,13 +469,23 @@ code
 		bool a_signed = mul->getParam(\A_SIGNED).as_bool();
 		bool b_signed = mul->getParam(\B_SIGNED).as_bool();
 		// Drive the DSP from the FF's D
-		SigSpec sigA = ffA ? port(ffA, \D) : port(mul, \A);
-		SigSpec sigB = ffB ? port(ffB, \D) : port(mul, \B);
+		Cell *inA = ffA, *inB = ffB;
+		// nextpnr-ecp5 has MULT18X18D timing only for both inputs
+		// registered or neither. With one it times the block as neither,
+		// and the logic in front of the absorbed register then lands on
+		// the multiplier path, so it reports a slower design than before.
+		if (ecp5 && (inA != nullptr) != (inB != nullptr)) {
+			inA = inB = nullptr;
+			if (!ffY)
+				reject;
+		}
+		SigSpec sigA = inA ? port(inA, \D) : port(mul, \A);
+		SigSpec sigB = inB ? port(inB, \D) : port(mul, \B);
 		SigSpec sigY = ffY ? port(ffY, \Q) : port(mul, \Y);
 
 		// 36X18 -> wide operand goes to A
-		Cell *ffa = ffA;
-		Cell *ffb = ffB;
+		Cell *ffa = inA;
+		Cell *ffb = inB;
 		if (prim == $__NX_MUL36X18 && aw <= 18 && bw <= 36) {
 			std::swap(sigA, sigB);
 			std::swap(a_signed, b_signed);
@@ -437,8 +545,11 @@ code
 		cell->setParam(\REGINPUTB, ffb ? std::string("REGISTER") : std::string("BYPASS"));
 		cell->setParam(\REGOUTPUT, ffY ? std::string("REGISTER") : std::string("BYPASS"));
 
-		if (ffa) autoremove(ffa);
-		if (ffb && ffb != ffa) autoremove(ffb);
+		// An input register is copied into the DSP, not moved: something
+		// else (another multiply sharing a scale, say) may read its Q.
+		// opt_clean drops the fabric copy once nothing does.
+		if (ffa) copied_ffs.insert(ffa);
+		if (ffb) copied_ffs.insert(ffb);
 		if (ffY) autoremove(ffY);
 		autoremove(mul);
 
@@ -460,7 +571,6 @@ match ff
 	filter ff->type.in($dff, $dffe) || param(ff, \SRST_VALUE).is_fully_zero()
 	filter GetSize(port(ff, \Q)) == GetSize(argQ)
 	index <SigSpec> port(ff, \Q) === argQ
-	filter nusers(port(ff, \Q)) == 2
 endmatch
 
 code
@@ -486,7 +596,7 @@ code
 endcode
 
 subpattern out_ff
-arg argD clk
+arg argD clk argSigned
 
 code
 	dff = nullptr;
@@ -496,13 +606,32 @@ match ff
 	select ff->type.in($dff, $dffe, $sdff, $sdffe)
 	select param(ff, \CLK_POLARITY).as_bool()
 	filter ff->type.in($dff, $dffe) || param(ff, \SRST_VALUE).is_fully_zero()
-	filter GetSize(port(ff, \D)) == GetSize(argD)
-	index <SigSpec> port(ff, \D) === argD
-	filter nusers(port(ff, \D)) == 2
+	filter GetSize(port(ff, \D)) >= GetSize(argD)
+	index <SigBit> port(ff, \D)[0] === argD[0]
 endmatch
 
 code
 	if (clk != SigBit() && sigmap(port(ff, \CLK)[0]) != clk)
+		reject;
+
+	// The register may be wider than the product when bound_arith has
+	// narrowed it: its extra D bits must then be the product's extension,
+	// which the DSP computes anyway.
+	{
+		SigSpec d = port(ff, \D);
+		int n = GetSize(argD);
+		if (d.extract(0, n) != argD)
+			reject;
+		SigBit ext = argSigned ? argD[n - 1] : SigBit(State::S0);
+		for (int i = n; i < GetSize(d); i++)
+			if (d[i] != ext)
+				reject;
+	}
+
+	// Once the register moves into the DSP the product no longer exists,
+	// so nothing but the register may read it. A register already copied
+	// into another DSP's input reads this D and must stay in the fabric.
+	if (nusers(argD) != 2 || copied_ffs.count(ff))
 		reject;
 
 	for (auto bit : sigmap(port(ff, \Q))) {

@@ -1,0 +1,66 @@
+read_verilog -sv mul_reg.sv
+design -save pristine
+
+# Input and output flops become REG_INPUTA/B and REG_OUTPUT
+design -load pristine
+hierarchy -top mul18_reg
+synth_ecp5 -top mul18_reg
+select -assert-count 1 t:MULT18X18D r:REG_INPUTA_CLK=CLK0 %i r:REG_INPUTB_CLK=CLK0 %i r:REG_OUTPUT_CLK=CLK0 %i
+select -assert-count 0 t:TRELLIS_FF
+
+design -load pristine
+hierarchy -top mul18_ctrl
+synth_ecp5 -top mul18_ctrl
+select -assert-count 1 t:MULT18X18D r:REG_INPUTA_CE=CE0 %i r:REG_INPUTB_CE=CE1 %i r:REG_OUTPUT_CE=CE2 %i r:REG_INPUTB_RST=RST1 %i
+select -assert-count 0 t:TRELLIS_FF
+
+design -load pristine
+hierarchy -top shared_scale
+synth_ecp5 -top shared_scale
+select -assert-count 2 t:MULT18X18D r:REG_OUTPUT_CLK=CLK0 %i
+# d0/d1 are not registered, and nextpnr times a one-sided input register as
+# none, so the scale register stays in the fabric
+select -assert-count 0 t:MULT18X18D r:REG_INPUTB_CLK=CLK0 %i
+select -assert-count 8 t:TRELLIS_FF
+
+# reject
+# the product is read outside the register
+design -load pristine
+hierarchy -top prod_used
+synth_ecp5 -top prod_used
+select -assert-count 1 t:MULT18X18D
+select -assert-count 0 t:MULT18X18D r:REG_OUTPUT_CLK=CLK0 %i
+select -assert-count 32 t:TRELLIS_FF
+
+# Split over four tiles: the product register moves back across the adder
+# tree onto every tile, and the operand registers into every tile.
+# Note for timing: with both input and output registers on, nextpnr-ecp5
+# does not time the multiplier array between them (about 3.4-3.9 ns at -6),
+# so an Fmax it reports above roughly 250 MHz is not the real limit.
+design -load pristine
+hierarchy -top mul32_reg
+synth_ecp5 -top mul32_reg
+select -assert-count 4 t:MULT18X18D r:REG_INPUTA_CLK=CLK0 %i r:REG_INPUTB_CLK=CLK0 %i r:REG_OUTPUT_CLK=CLK0 %i
+select -assert-count 0 t:TRELLIS_FF
+
+# Signed: tiles with mixed signedness
+design -load pristine
+hierarchy -top mul32_signed
+synth_ecp5 -top mul32_signed
+select -assert-count 4 t:MULT18X18D r:REG_INPUTA_CLK=CLK0 %i r:REG_INPUTB_CLK=CLK0 %i r:REG_OUTPUT_CLK=CLK0 %i
+select -assert-count 0 t:TRELLIS_FF
+
+# reject
+# the split product is also read directly, so its register stays
+design -load pristine
+hierarchy -top mul32_seen
+synth_ecp5 -top mul32_seen
+select -assert-count 0 t:MULT18X18D r:REG_OUTPUT_CLK=CLK0 %i
+select -assert-min 64 t:TRELLIS_FF
+
+# no flops: the instance has no register parameters at all
+design -load pristine
+hierarchy -top mul18_comb
+synth_ecp5 -top mul18_comb
+select -assert-count 1 t:MULT18X18D
+select -assert-count 0 t:MULT18X18D r:REG_INPUTA_CLK %i

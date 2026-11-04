@@ -1,0 +1,236 @@
+read_verilog -sv alu54_mac.sv
+design -save pristine
+
+# Two products, the running sum in the ALU54B output register
+design -load pristine
+hierarchy -top mac2
+synth_ecp5 -top mac2
+select -assert-count 1 t:ALU54B
+select -assert-count 2 t:MULT18X18D
+select -assert-count 0 t:TRELLIS_FF
+select -assert-count 0 t:CCU2C
+
+design -load pristine
+hierarchy -top mac2_signed
+synth_ecp5 -top mac2_signed
+select -assert-count 1 t:ALU54B
+select -assert-count 0 t:TRELLIS_FF
+
+# A reload drives the opcode's C select
+design -load pristine
+hierarchy -top mac_load
+synth_ecp5 -top mac_load
+select -assert-count 1 t:ALU54B
+select -assert-count 0 t:TRELLIS_FF
+select -assert-count 0 t:CCU2C
+
+# A single product would idle one MULT18X18D of the pair: only on request
+design -load pristine
+hierarchy -top mac1_en_rst
+synth_ecp5 -top mac1_en_rst
+select -assert-count 0 t:ALU54B
+select -assert-count 1 t:MULT18X18D
+
+design -load pristine
+hierarchy -top mac1_en_rst
+synth_ecp5 -dsp-mac1 -top mac1_en_rst
+select -assert-count 1 t:ALU54B
+select -assert-count 2 t:MULT18X18D
+select -assert-count 0 t:TRELLIS_FF
+
+# rejects
+design -load pristine
+hierarchy -top rej_trunc
+synth_ecp5 -dsp-mac1 -top rej_trunc
+select -assert-count 0 t:ALU54B
+
+design -load pristine
+hierarchy -top rej_shared
+synth_ecp5 -dsp-mac1 -top rej_shared
+select -assert-count 0 t:ALU54B
+
+design -load pristine
+hierarchy -top rej_wide
+synth_ecp5 -dsp-mac1 -top rej_wide
+select -assert-count 0 t:ALU54B
+
+design -load pristine
+hierarchy -top rej_wrapdiff
+proc
+opt
+wreduce
+opt_clean
+lattice_dsp_ecp5 -mac1
+select -assert-count 0 t:$__ECP5_MAC54
+
+design -load pristine
+hierarchy -top rej_53
+synth_ecp5 -top rej_53
+select -assert-count 0 t:ALU54B
+
+design -load pristine
+hierarchy -top rej_twice
+synth_ecp5 -dsp-mac1 -top rej_twice
+select -assert-count 0 t:ALU54B
+
+design -load pristine
+hierarchy -top dot4
+synth_ecp5 -top dot4
+select -assert-count 2 t:ALU54B
+select -assert-count 4 t:MULT18X18D
+select -assert-count 0 t:TRELLIS_FF
+
+design -load pristine
+hierarchy -top rope
+synth_ecp5 -top rope
+select -assert-count 2 t:ALU54B
+select -assert-count 4 t:MULT18X18D
+select -assert-count 0 t:TRELLIS_FF
+select -assert-count 0 t:CCU2C
+
+design -load pristine
+hierarchy -top dot2_bias
+synth_ecp5 -top dot2_bias
+select -assert-count 1 t:ALU54B
+select -assert-count 0 t:TRELLIS_FF
+select -assert-count 0 t:CCU2C
+
+design -load pristine
+hierarchy -top dot2_round
+synth_ecp5 -top dot2_round
+select -assert-count 1 t:ALU54B r:RNDPAT=0x00000000008000 %i
+select -assert-count 0 t:TRELLIS_FF
+
+design -load pristine
+hierarchy -top regin
+synth_ecp5 -top regin
+select -assert-count 1 t:ALU54B
+select -assert-count 2 t:MULT18X18D r:REG_INPUTA_CLK=CLK0 %i r:REG_INPUTB_CLK=CLK0 %i
+select -assert-count 0 t:TRELLIS_FF
+
+design -load pristine
+hierarchy -top regin_half
+synth_ecp5 -top regin_half
+select -assert-count 1 t:ALU54B
+select -assert-count 0 t:MULT18X18D r:REG_INPUTA_CLK=CLK0 %i
+select -assert-count 8 t:TRELLIS_FF
+
+design -load pristine
+hierarchy -top pipe_full
+synth_ecp5 -top pipe_full
+select -assert-count 1 t:ALU54B
+select -assert-count 2 t:MULT18X18D r:REG_INPUTA_CLK=CLK0 %i r:REG_PIPELINE_CLK=CLK0 %i
+select -assert-count 0 t:TRELLIS_FF
+
+design -load pristine
+hierarchy -top pipe_shared
+synth_ecp5 -top pipe_shared
+select -assert-count 0 t:ALU54B
+
+# The inference alone, proved against the RTL with a behavioural cell
+design -load pristine
+hierarchy -top mac_small
+proc
+opt
+wreduce
+opt_clean
+copy mac_small gold
+rename mac_small gate
+lattice_dsp_ecp5 gate
+select -assert-count 1 gate/t:$__ECP5_MAC54
+techmap -autoproc -map alu54_mac_model.v gate
+proc
+opt_clean
+miter -equiv -make_assert -flatten gold gate miter
+hierarchy -top miter
+sat -verify -prove-asserts -tempinduct -set-init-zero -seq 1 miter
+
+# The inference alone, proved against the RTL with a behavioural cell
+design -load pristine
+hierarchy -top sum_small
+proc
+opt
+wreduce
+opt_clean
+copy sum_small gold
+rename sum_small gate
+lattice_dsp_ecp5 gate
+select -assert-count 2 gate/t:$__ECP5_MAC54
+techmap -autoproc -map alu54_mac_model.v gate
+proc
+opt_clean
+miter -equiv -make_assert -flatten gold gate miter
+hierarchy -top miter
+sat -verify -prove-asserts -tempinduct -set-init-zero -seq 1 miter
+
+# The inference alone, proved against the RTL with a behavioural cell
+design -load pristine
+hierarchy -top acc4_small
+proc
+opt
+wreduce
+opt_clean
+copy acc4_small gold
+rename acc4_small gate
+lattice_dsp_ecp5 gate
+select -assert-count 2 gate/t:$__ECP5_MAC54
+techmap -autoproc -map alu54_mac_model.v gate
+proc
+opt_clean
+miter -equiv -make_assert -flatten gold gate miter
+hierarchy -top miter
+sat -verify -prove-asserts -tempinduct -set-init-zero -seq 1 miter
+
+# The inference alone, proved against the RTL with a behavioural cell
+design -load pristine
+hierarchy -top round_small
+proc
+opt
+wreduce
+opt_clean
+copy round_small gold
+rename round_small gate
+lattice_dsp_ecp5 gate
+select -assert-count 1 gate/t:$__ECP5_MAC54
+techmap -autoproc -map alu54_mac_model.v gate
+proc
+opt_clean
+miter -equiv -make_assert -flatten gold gate miter
+hierarchy -top miter
+sat -verify -prove-asserts -tempinduct -set-init-zero -seq 1 miter
+
+# The inference alone, proved against the RTL with a behavioural cell
+design -load pristine
+hierarchy -top regin_small
+proc
+opt
+wreduce
+opt_clean
+copy regin_small gold
+rename regin_small gate
+lattice_dsp_ecp5 gate
+select -assert-count 1 gate/t:$__ECP5_MAC54
+techmap -autoproc -map alu54_mac_model.v gate
+proc
+opt_clean
+miter -equiv -make_assert -flatten gold gate miter
+hierarchy -top miter
+sat -verify -prove-asserts -tempinduct -set-init-zero -seq 1 miter
+
+# The inference alone, proved against the RTL with a behavioural cell
+design -load pristine
+hierarchy -top pipe_small
+proc
+opt
+wreduce
+opt_clean
+copy pipe_small gold
+rename pipe_small gate
+lattice_dsp_ecp5 gate
+select -assert-count 1 gate/t:$__ECP5_MAC54
+techmap -autoproc -map alu54_mac_model.v gate
+proc
+opt_clean
+miter -equiv -make_assert -flatten gold gate miter
+hierarchy -top miter
+sat -verify -prove-asserts -tempinduct -set-init-zero -seq 1 miter

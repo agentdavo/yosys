@@ -1,0 +1,29 @@
+read_verilog -sv dsp_shift.sv
+design -save pristine
+
+# Off by default: the LUT shifter is faster
+design -load pristine
+hierarchy -top shift_u
+synth_ecp5 -top shift_u
+select -assert-count 0 t:MULT18X18D
+
+design -load pristine
+hierarchy -top shift_u
+synth_ecp5 -dsp-shift -top shift_u
+select -assert-count 1 t:MULT18X18D
+
+design -load pristine
+hierarchy -top shift_s
+synth_ecp5 -dsp-shift -top shift_s
+select -assert-count 1 t:MULT18X18D
+
+# reject
+design -load pristine
+hierarchy -top shift_const
+synth_ecp5 -dsp-shift -top shift_const
+select -assert-count 0 t:MULT18X18D
+
+design -load pristine
+hierarchy -top shift_wide
+synth_ecp5 -dsp-shift -top shift_wide
+select -assert-count 0 t:MULT18X18D

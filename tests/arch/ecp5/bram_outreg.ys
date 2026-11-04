@@ -1,0 +1,34 @@
+read_verilog -sv bram_outreg.sv
+design -save pristine
+
+design -load pristine
+hierarchy -top outreg
+synth_ecp5 -top outreg
+select -assert-count 1 t:DP16KD r:REGMODE_B=OUTREG %i
+select -assert-count 0 t:TRELLIS_FF
+
+design -load pristine
+hierarchy -top outreg_en
+synth_ecp5 -top outreg_en
+select -assert-count 1 t:DP16KD r:REGMODE_B=OUTREG %i
+select -assert-count 0 t:TRELLIS_FF
+
+# reject
+design -load pristine
+hierarchy -top outreg_rst
+synth_ecp5 -top outreg_rst
+select -assert-count 0 t:DP16KD r:REGMODE_A=OUTREG %i
+select -assert-count 0 t:DP16KD r:REGMODE_B=OUTREG %i
+select -assert-count 16 t:TRELLIS_FF
+
+design -load pristine
+hierarchy -top outreg_seen
+synth_ecp5 -top outreg_seen
+select -assert-count 0 t:DP16KD r:REGMODE_B=OUTREG %i
+select -assert-count 16 t:TRELLIS_FF
+
+design -load pristine
+hierarchy -top outreg_wide
+synth_ecp5 -top outreg_wide
+select -assert-count 0 t:DP16KD r:REGMODE_A=OUTREG %i
+select -assert-count 0 t:DP16KD r:REGMODE_B=OUTREG %i
