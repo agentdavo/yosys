@@ -1,0 +1,53 @@
+# A chain of adds with no product in it and no multiply or shift reading it
+# keeps its declared widths, so alumacc still merges it into one $macc.
+# Narrowing each partial sum to its range left 31 adders in series.
+read_verilog <<EOT
+module popcount(input [31:0] x, output reg [5:0] c);
+	integer i;
+	always @(*) begin
+		c = 6'd0;
+		for (i = 0; i < 32; i = i + 1)
+			c = c + {5'd0, x[i]};
+	end
+endmodule
+EOT
+hierarchy -top popcount
+synth_ecp5 -top popcount -run begin:map_ram
+select -assert-count 1 t:$macc*
+select -assert-none t:$alu
+
+# The pass alone leaves the chain as it found it
+design -reset
+read_verilog <<EOT
+module popcount(input [31:0] x, output reg [5:0] c);
+	integer i;
+	always @(*) begin
+		c = 6'd0;
+		for (i = 0; i < 32; i = i + 1)
+			c = c + {5'd0, x[i]};
+	end
+endmodule
+EOT
+hierarchy -top popcount
+proc
+opt_clean
+wreduce
+opt_clean
+equiv_opt -assert lattice_dsp_ecp5
+design -load postopt
+select -assert-min 20 t:$add r:Y_WIDTH=6 %i
+
+# A sum that a multiply reads is still narrowed to its range
+design -reset
+read_verilog <<EOT
+module sum_then_mul(input [7:0] a, b, c, d, input [7:0] k, output [17:0] y);
+	wire [15:0] s = a + b + c + d;
+	assign y = s * k;
+endmodule
+EOT
+hierarchy -top sum_then_mul
+proc
+opt_clean
+equiv_opt -assert lattice_dsp_ecp5
+design -load postopt
+select -assert-none t:$add r:Y_WIDTH>10 %i

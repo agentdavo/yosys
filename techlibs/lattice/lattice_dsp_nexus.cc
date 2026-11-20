@@ -168,6 +168,54 @@ static pool<IdString> bound_arith(Module *module)
 			cells.push_back(cell);
 			y0_of[sigmap(cell->getPort(ID::Y))[0]] = cell;
 		}
+	// A narrower Y only helps where a DSP can use the true width: a sum that
+	// contains a product, or a value that a multiply or shift reads. A plain
+	// chain of adds (a popcount, say) keeps its declared width: alumacc does
+	// not merge adds of unequal width into one $macc, so narrowing such a
+	// chain would leave it as a serial ripple of adders.
+	pool<Cell*> has_product, feeds_dsp;
+	{
+		dict<SigBit, Cell*> driver;
+		for (auto cell : cells) {
+			for (auto bit : sigmap(cell->getPort(ID::Y)))
+				driver[bit] = cell;
+			if (cell->type == ID($mul))
+				has_product.insert(cell);
+		}
+		// producer -> the $add cells that read it
+		dict<Cell*, pool<Cell*>> add_readers;
+		for (auto cell : module->cells()) {
+			bool is_add = cell->type == ID($add);
+			bool is_dsp_reader = cell->type.in(ID($mul), ID($shl), ID($sshl), ID($shift), ID($shiftx));
+			if (!is_add && !is_dsp_reader)
+				continue;
+			for (auto port : {ID::A, ID::B}) {
+				if (!cell->hasPort(port))
+					continue;
+				for (auto bit : sigmap(cell->getPort(port))) {
+					auto it = driver.find(bit);
+					if (it == driver.end())
+						continue;
+					if (is_dsp_reader)
+						feeds_dsp.insert(it->second);
+					if (is_add)
+						add_readers[it->second].insert(cell);
+				}
+			}
+		}
+		bool grew = true;
+		while (grew) {
+			grew = false;
+			for (auto &it : add_readers)
+				for (auto reader : it.second) {
+					if (has_product.count(it.first) && has_product.insert(reader).second)
+						grew = true;
+					if (feeds_dsp.count(reader) && feeds_dsp.insert(it.first).second)
+						grew = true;
+				}
+		}
+	}
+
 	// Low Y bits of each cell that still carry its value, and its range.
 	dict<Cell*, int> live;
 	dict<Cell*, Range> range;
@@ -223,6 +271,8 @@ static pool<IdString> bound_arith(Module *module)
 				changed = true;
 			}
 			if (exact >= live.at(cell))
+				continue;
+			if (!has_product.count(cell) && !feeds_dsp.count(cell))
 				continue;
 			SigSpec y = cell->getPort(ID::Y);
 			cell->setPort(ID::Y, y.extract(0, exact));
